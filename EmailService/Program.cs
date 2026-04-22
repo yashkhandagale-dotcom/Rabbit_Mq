@@ -5,29 +5,47 @@ using System.Text;
 var factory = new ConnectionFactory()
 {
     HostName = "localhost",
-    UserName = "email_user",
-    Password = "email123",
-    VirtualHost = "prod_vhost"
+    UserName = "guest",
+    Password = "guest",
+    VirtualHost = "/"
 };
 
-var connection = factory.CreateConnection();
-var channel = connection.CreateModel();
+const string exchangeName = "order_exchange";
 
-channel.ExchangeDeclare("order_exchange", ExchangeType.Fanout);
+await using var connection = await factory.CreateConnectionAsync();
+await using var channel = await connection.CreateChannelAsync();
 
-var queueName = channel.QueueDeclare().QueueName;
+await channel.ExchangeDeclareAsync(
+    exchange: exchangeName,
+    type: ExchangeType.Fanout,
+    durable: true
+);
 
-channel.QueueBind(queueName, "order_exchange", "");
+var queueResult = await channel.QueueDeclareAsync(
+    queue: "email_queue",
+    durable: true,
+    exclusive: false,
+    autoDelete: false
+);
 
-var consumer = new EventingBasicConsumer(channel);
+await channel.QueueBindAsync(queueResult.QueueName, exchangeName, routingKey: "");
+await channel.BasicQosAsync(prefetchSize: 0, prefetchCount: 1, global: false);
 
-consumer.Received += (model, ea) =>
+var consumer = new AsyncEventingBasicConsumer(channel);
+
+consumer.ReceivedAsync += async (model, ea) =>
 {
     var message = Encoding.UTF8.GetString(ea.Body.ToArray());
     Console.WriteLine($"📧 Email Sent for: {message}");
+    await channel.BasicAckAsync(ea.DeliveryTag, multiple: false);
 };
 
-channel.BasicConsume(queueName, true, consumer);
+await channel.BasicConsumeAsync(queueResult.QueueName, autoAck: false, consumer: consumer);
 
-Console.WriteLine("Waiting for messages...");
-Console.ReadLine();
+Console.WriteLine("📧 EmailService waiting for messages... (Ctrl+C to exit)");
+
+var cts = new CancellationTokenSource();
+Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
+try { await Task.Delay(Timeout.Infinite, cts.Token); } catch (TaskCanceledException) { }
+
+Console.WriteLine("📧 EmailService shutting down.");

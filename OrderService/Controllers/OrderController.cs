@@ -8,32 +8,45 @@ namespace OrderService.Controllers
     [Route("api/order")]
     public class OrderController : ControllerBase
     {
-        [HttpPost]
-        public IActionResult CreateOrder([FromBody] string orderName)
+        private readonly IConnection _connection;
+
+        public OrderController(IConnection connection)
         {
-            var factory = new ConnectionFactory()
-            {
-                HostName = "localhost",
-                UserName = "order_user",
-                Password = "order123",
-                VirtualHost = "prod_vhost"
-            };
+            _connection = connection;
+        }
 
-            using var connection = factory.CreateConnection();
-            using var channel = connection.CreateModel();
+        [HttpPost]
+        public async Task<IActionResult> CreateOrder([FromBody] string orderName)
+        {
+            if (string.IsNullOrWhiteSpace(orderName))
+                return BadRequest("Order name cannot be empty.");
 
-            channel.ExchangeDeclare("order_exchange", ExchangeType.Fanout);
+            await using var channel = await _connection.CreateChannelAsync();
+
+            await channel.ExchangeDeclareAsync(
+                exchange: "order_exchange",
+                type: ExchangeType.Fanout,
+                durable: true
+            );
 
             var message = $"Order Created: {orderName}";
             var body = Encoding.UTF8.GetBytes(message);
 
-            channel.BasicPublish(
+            var props = new BasicProperties
+            {
+                Persistent = true
+            };
+
+            await channel.BasicPublishAsync(
                 exchange: "order_exchange",
                 routingKey: "",
+                mandatory: false,
+                basicProperties: props,
                 body: body
             );
 
-            return Ok("Order Sent!");
+            Console.WriteLine($"[OrderService] Published: {message}");
+            return Ok(new { status = "Order sent!", order = orderName });
         }
     }
 }
